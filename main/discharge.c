@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "soc/soc_caps.h"
@@ -16,7 +18,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "driver/gpio.h"
+
 
 const static char *TAG = "";
 /*---------------------------------------------------------------
@@ -31,12 +33,18 @@ const static char *TAG = "";
 #define GPIO_OUTPUT_IO_18 GPIO_NUM_18
 #define GPIO_OUTPUT_PIN_SEL (1ULL << GPIO_OUTPUT_IO_18)
 
+#define LOOP_DELAY_TIME 60000
+
+
 static int adc_raw[2][10];
 static int voltage[2][10];
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static gpio_config_t io_conf = {};
 static void init_gpios();
+static int bat_voltage(int32_t);
+static int32_t last_reg_voltage;
+static adc_oneshot_unit_handle_t adc1_handle;
 
 
 //LED task
@@ -54,20 +62,50 @@ void led_toggle(void *pvParameters) {
     }
 }
 
+// LDO task
+void control_enable(void *)
+{
+    //static adc_oneshot_unit_handle_t adc1_handle;
+    adc_cali_handle_t adc1_cali_chan1_handle = NULL;
+    //bool do_calibration1_chan1;
+
+    bool do_calibration1_chan1 = example_adc_calibration_init(ADC_UNIT_1, LOAD_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan1_handle);
+
+    while (1)
+    {
+        gpio_set_level(GPIO_OUTPUT_IO_18, 1);
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LOAD_ADC_CHANNEL, &adc_raw[0][1]));
+        if (do_calibration1_chan1)
+        {
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan1_handle, adc_raw[0][1], &voltage[0][1]));
+            if (voltage[0][1] > 1000)
+            {
+                last_reg_voltage = voltage[0][1];
+            }
+        }
+
+        gpio_set_level(GPIO_OUTPUT_IO_18, 0);
+        vTaskDelay(pdMS_TO_TICKS(8000));
+    }
+}
 
 void app_main(void)
 {
     double acc_time = 0.0;
-    uint32_t sample_number = 0; 
-
+    uint32_t sample_number = 0;
+    double_t amp_hours = 0;
+    double average_current;
 
     init_gpios();
-    //gpio_toggle();
+    // gpio_toggle();
 
     //-------------ADC1 Init---------------//
-    adc_oneshot_unit_handle_t adc1_handle;
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
+        //   .clk_src = ADC_ULP_MODE_RISCV,
+        //   .ulp_mode = ADC_ULP_MODE_DISABLE
     };
     ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
 
@@ -80,51 +118,55 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, LOAD_ADC_CHANNEL, &config));
 
     //-------------ADC1 Calibration Init---------------//
-    adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-    adc_cali_handle_t adc1_cali_chan1_handle = NULL;
+    static adc_cali_handle_t adc1_cali_chan0_handle = NULL;
     bool do_calibration1_chan0 = example_adc_calibration_init(ADC_UNIT_1, BATTERY_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
-    bool do_calibration1_chan1 = example_adc_calibration_init(ADC_UNIT_1, LOAD_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan1_handle);
 
+    // Task to flash led
+    //   xTaskCreatePinnedToCore(
+    //       led_toggle,          /* Task function. */
+    //       "led_toggle",        /* name of task. */
+    //       2048,                 /* Stack size of task */
+    //       NULL,                 /* parameter of the task */
+    //       5,                    /* priority of the task */
+    //       NULL,                 /* Task handle to keep track of created task */
+    //       tskNO_AFFINITY
+    //   );
 
-    //Task to flash led
+    //
+    // Control enable
     xTaskCreatePinnedToCore(
-        led_toggle,          /* Task function. */
-        "led_toggle",        /* name of task. */
-        2048,                 /* Stack size of task */
-        NULL,                 /* parameter of the task */
-        5,                    /* priority of the task */
-        NULL,                 /* Task handle to keep track of created task */
-        tskNO_AFFINITY
+        control_enable,   /* Task function. */
+        "control_enable", /* name of task. */
+        2048,             /* Stack size of task */
+        NULL,             /* parameter of the task */
+        5,                /* priority of the task */
+        NULL,             /* Task handle to keep track of created task */
+        1                 /* tskNO_AFFINITY*/
     );
-
 
     while (1)
     {
+        vTaskDelay(pdMS_TO_TICKS(LOOP_DELAY_TIME));
 
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &adc_raw[0][0]));
         if (do_calibration1_chan0)
-            {
+        {
             ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-            //ESP_LOGI(TAG, "Battery_Voltage: %d mV", voltage[0][0]);
-            acc_time = acc_time + 0.016666666;
-            sample_number = sample_number + 1;  
-            printf("%lu %.3f Hours %d mV\n",sample_number,acc_time, voltage[0][0]);
-            }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-      //  vTaskDelay(pdMS_TO_TICKS(60000)); 
+        }
+
+        acc_time = acc_time + 0.016666666;
+        sample_number = sample_number + 1;
+        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.2) * 6; // 3v / 60 ohms  20% on time 80% off.  6 times a minute.
+
+        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
+        printf("%lu ETime %.3f Hrs BatV %d mV RegV %ld mV %.5f aH\n", sample_number, acc_time, bat_voltage(voltage[0][0]), last_reg_voltage, amp_hours);
     }
-
-
 
     // Tear Down
     ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
     if (do_calibration1_chan0)
     {
         example_adc_calibration_deinit(adc1_cali_chan0_handle);
-    }
-    if (do_calibration1_chan1)
-    {
-        example_adc_calibration_deinit(adc1_cali_chan1_handle);
     }
 }
 
@@ -202,6 +244,18 @@ static void example_adc_calibration_deinit(adc_cali_handle_t handle)
 }
 
 
+/** Calc battery voltage **/
+static int bat_voltage(int32_t adc_reading)
+{
+   
+    double r1 = 680000;  //Resistor connected to battery
+    double r2 = 2700000; //Resistor connected to ground
+    double offset = 40;  // Adjustment due to input impedence of ADC pin and resistor r1?
+
+    return (int)(((((double) adc_reading)/ r2) * (r1 + r2)) + offset);
+}
+
+
 void init_gpios()
 {
     // zero-initialize the config structure.
@@ -213,13 +267,12 @@ void init_gpios()
     // bit mask of the pins that you want to set,e.g.GPIO18/19
     io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL;
     // disable pull-down mode
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE;
     // disable pull-up mode
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     // configure GPIO with the given settings
     gpio_config(&io_conf);
 }
-
 
 
 #ifdef DEBUG
