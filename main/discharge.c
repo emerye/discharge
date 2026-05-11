@@ -160,10 +160,10 @@ void app_main(void)
 
         acc_time = acc_time + 0.016666666;
         sample_number = sample_number + 1;
-        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5) * 6; // 3v / 60 ohms  50% on time 50% off.  6 times a minute.
+        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off. 
 
         amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
-        printf("%lu ETime %.3f Hrs BatV %d mV RegV %ld mV %.3f aH\n", sample_number, acc_time, bat_voltage(voltage[0][0]), last_reg_voltage, amp_hours);
+        printf("%lu ETime %.3f Hrs BatV %d mV RegV %ld mV %.5f aH\n", sample_number, acc_time, bat_voltage(voltage[0][0]), last_reg_voltage, amp_hours);
     }
 
     // Tear Down
