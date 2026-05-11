@@ -21,6 +21,7 @@
 
 
 const static char *TAG = "";
+
 /*---------------------------------------------------------------
         ADC General Macros
 ---------------------------------------------------------------*/
@@ -33,8 +34,11 @@ const static char *TAG = "";
 #define GPIO_OUTPUT_IO_18 GPIO_NUM_18
 #define GPIO_OUTPUT_PIN_SEL (1ULL << GPIO_OUTPUT_IO_18)
 
-#define LOOP_DELAY_TIME 60000
+#define LED_GPIO 48
 
+
+#define LOOP_DELAY_TIME 60000
+//#define LOOP_DELAY_TIME 1000
 
 static int adc_raw[2][10];
 static int voltage[2][10];
@@ -65,17 +69,16 @@ void led_toggle(void *pvParameters) {
 // LDO task
 void control_enable(void *)
 {
-    //static adc_oneshot_unit_handle_t adc1_handle;
     adc_cali_handle_t adc1_cali_chan1_handle = NULL;
-    //bool do_calibration1_chan1;
-
     bool do_calibration1_chan1 = example_adc_calibration_init(ADC_UNIT_1, LOAD_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan1_handle);
 
     while (1)
     {
         gpio_set_level(GPIO_OUTPUT_IO_18, 1);
+        //LED 
+        gpio_set_level(GPIO_NUM_48, 0);
 
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LOAD_ADC_CHANNEL, &adc_raw[0][1]));
         if (do_calibration1_chan1)
         {
@@ -85,9 +88,10 @@ void control_enable(void *)
                 last_reg_voltage = voltage[0][1];
             }
         }
-
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        gpio_set_level(GPIO_NUM_48, 1);
         gpio_set_level(GPIO_OUTPUT_IO_18, 0);
-        vTaskDelay(pdMS_TO_TICKS(8000));
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 }
 
@@ -156,7 +160,7 @@ void app_main(void)
 
         acc_time = acc_time + 0.016666666;
         sample_number = sample_number + 1;
-        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.2) * 6; // 3v / 60 ohms  20% on time 80% off.  6 times a minute.
+        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5) * 6; // 3v / 60 ohms  50% on time 50% off.  6 times a minute.
 
         amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
         printf("%lu ETime %.3f Hrs BatV %d mV RegV %ld mV %.3f aH\n", sample_number, acc_time, bat_voltage(voltage[0][0]), last_reg_voltage, amp_hours);
@@ -272,6 +276,7 @@ void init_gpios()
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     // configure GPIO with the given settings
     gpio_config(&io_conf);
+    gpio_set_direction(LED_GPIO,GPIO_MODE_OUTPUT);
 }
 
 
