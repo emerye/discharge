@@ -23,6 +23,9 @@
 
 const static char *TAG = "";
 
+/* 1M and 2M Battery divider correction*/
+//#define BATTERY_DIVIDER_CORRECTION     1.572f
+#define BATTERY_DIVIDER_CORRECTION     1.5f
 /*---------------------------------------------------------------
         ADC General Macros
 ---------------------------------------------------------------*/
@@ -63,23 +66,28 @@ const static char *TAG = "";
 #define READ_BATTERY 0     /* Used to select read_adc_voltage battery or regulator*/
 #define READ_REGULATOR 1   /* Used to select read_adc_voltage battery or regulator*/
 
+#define MAINLOOP_DELAY  1000
+// #define MAINLOOP_DELAY  60000
+
+
 static gpio_config_t io_conf = {};
 static void init_gpios();
-static int last_reg_voltage;
 static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t dev_handle;
-static float regulator_volts; 
+static float regulator_volts = 3.00;
+static float batVolts; 
 
 float calc_voltage(uint8_t, uint8_t);
 static esp_err_t read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_handle, float *batVolts);
 
 /**
  * @brief Read a sequence of bytes.
- */
+ 
 static esp_err_t ads1x15_register_read(i2c_master_dev_handle_t dev_handle, uint8_t *read_buffer, size_t len)
 {
     return i2c_master_receive(dev_handle, read_buffer, len, I2C_MASTER_TIMEOUT_MS);
 }
+*/
 
 /*
  * @brief Write a byte to address pointer
@@ -88,7 +96,6 @@ static esp_err_t ads1x15_register_write_byte(i2c_master_dev_handle_t dev_handle,
 {
     return (i2c_master_transmit(dev_handle, data, numbytes, I2C_MASTER_TIMEOUT_MS));
 }
-
 
 
 // LED task
@@ -118,16 +125,16 @@ void control_enable(void *)
     while (1)
     {
         gpio_set_level(GPIO_OUTPUT_IO_18, 0);
-        // LED
-        gpio_set_level(GPIO_NUM_48, 1);
-
+        
+        gpio_set_level(GPIO_NUM_48, 1);     //LED
+        read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
         vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP_ERROR_CHECK(read_adc_voltage(READ_REGULATOR, dev_handle, &regulator_volts));
-        printf("Regulator Voltage in task %.3f\n", regulator_volts);
-
         gpio_set_level(GPIO_OUTPUT_IO_18, 1);
         gpio_set_level(GPIO_NUM_48, 0);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        vTaskDelay(pdMS_TO_TICKS(1900));
+        ESP_ERROR_CHECK(read_adc_voltage(READ_REGULATOR, dev_handle, &regulator_volts));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -150,11 +157,18 @@ static esp_err_t read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_
         buffer[1] = REGULATOR_MUX;
     }
     buffer[2] = LOWCONF_BYTE;
-    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, buffer, 3, data, 2, I2C_MASTER_TIMEOUT_MS));
+    ESP_ERROR_CHECK(ads1x15_register_write_byte(dev_handle, buffer, 3));
     buffer[0] = 0;
-    ESP_ERROR_CHECK(ads1x15_register_write_byte(dev_handle, buffer, 1));
-    ads1x15_register_read(dev_handle, buffer, 2);
-    *batVolts = calc_voltage(buffer[0], buffer[1]);
+    ESP_ERROR_CHECK(ads1x15_register_write_byte(dev_handle, buffer, 1)); 
+    usleep(5000);    //A sample period is 4msec.
+
+    ESP_ERROR_CHECK(i2c_master_receive(dev_handle, data, 2, I2C_MASTER_TIMEOUT_MS));
+    if (whichVoltage == READ_BATTERY) 
+    {
+        *batVolts = (calc_voltage(data[0], data[1]) * BATTERY_DIVIDER_CORRECTION);
+    } else {
+        *batVolts = calc_voltage(data[0], data[1]);
+    }
     return 0;
 }
 
@@ -196,11 +210,13 @@ void app_main(void)
     uint32_t sample_number = 0;
     double_t amp_hours = 0;
     double average_current;
-    float batVolts;
 
     init_gpios();
 
-      // Control enable
+    i2c_master_init(&bus_handle, &dev_handle);
+    ESP_LOGI(TAG, "I2C initialized successfully");
+
+     // Enable task to control LDO enable. 
     xTaskCreatePinnedToCore(
         control_enable,   /* Task function. */
         "control_enable", /* name of task. */
@@ -211,37 +227,16 @@ void app_main(void)
         1                 /* tskNO_AFFINITY*/
     );
 
-
-    i2c_master_init(&bus_handle, &dev_handle);
-    ESP_LOGI(TAG, "I2C initialized successfully");
-
-    read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
-    printf("Battery Voltage %.3f\n", batVolts);
-
-    read_adc_voltage(READ_REGULATOR, dev_handle, &batVolts);
-    printf("Regulator Voltage %.3f\n", batVolts);
-
-    usleep(2000);
     while (1)
     {
-        read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
-        printf("Battery Voltage %.3f\n", batVolts);
-
-        sleep(2.0);
-
-        read_adc_voltage(READ_REGULATOR, dev_handle, &batVolts);
-        printf("Regulator Voltage %.3f\n", batVolts);
+        vTaskDelay(pdMS_TO_TICKS(MAINLOOP_DELAY));
 
         acc_time = acc_time + 0.016666666;
         sample_number = sample_number + 1;
-        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off.
-
-        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
-                                                                    
-        //  printf("%lu ETime %.3f Hrs BatV %d mV RegV %d mV %.3f aH\n", sample_number, acc_time, voltage[0][0], last_reg_voltage, amp_hours);
+        average_current = ((regulator_volts / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off.
+        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min                                                         
+        printf("%lu ETime %.3f Hrs BatV %.3f mV RegV %.3f mV %.3f aH\n", sample_number, acc_time, batVolts, regulator_volts, amp_hours);
     }
-
-    usleep(1000);
 
     ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle));
     ESP_ERROR_CHECK(i2c_del_master_bus(bus_handle));
