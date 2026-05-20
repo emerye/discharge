@@ -21,7 +21,6 @@
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
 
-
 const static char *TAG = "";
 
 /*---------------------------------------------------------------
@@ -38,93 +37,47 @@ const static char *TAG = "";
 
 #define LED_GPIO 48
 
-//#define LOOP_DELAY_TIME 60000
+// #define LOOP_DELAY_TIME 60000
 #define LOOP_DELAY_TIME 1000
 
 /*---------------------------------------------------------------
         ADS1116
 ---------------------------------------------------------------*/
 
-#define I2C_MASTER_SCL_IO           9                           /*!< GPIO number used for I2C master clock */
-#define I2C_MASTER_SDA_IO           8                           /*!< GPIO number used for I2C master data  */
-#define I2C_MASTER_NUM              0                           /*!< I2C port number for master dev */
-#define I2C_MASTER_FREQ_HZ          100000                       /*!< I2C master clock frequency */
-#define I2C_MASTER_TX_BUF_DISABLE   0                           /*!< I2C master doesn't need buffer */
-#define I2C_MASTER_RX_BUF_DISABLE   0                           /*!< I2C master doesn't need buffer */
-#define I2C_MASTER_TIMEOUT_MS       1000
+#define I2C_MASTER_SCL_IO 9         /*!< GPIO number used for I2C master clock */
+#define I2C_MASTER_SDA_IO 8         /*!< GPIO number used for I2C master data  */
+#define I2C_MASTER_NUM 0            /*!< I2C port number for master dev */
+#define I2C_MASTER_FREQ_HZ 100000   /*!< I2C master clock frequency */
+#define I2C_MASTER_TX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_RX_BUF_DISABLE 0 /*!< I2C master doesn't need buffer */
+#define I2C_MASTER_TIMEOUT_MS 1000
 
 // ADS1115
-#define ADS1115_ADDR                 0x48        /*!< Address of the ADS1x15 sensor */
-#define CONVERSION_REG               0X00        /* Conversion Register*/
-#define CONFIG_REG                   0x01         /* Configuration Register*/
+#define ADS1115_ADDR 0x48   /*!< Address of the ADS1x15 sensor */
+#define CONVERSION_REG 0X00 /* Conversion Register*/
+#define CONFIG_REG 0x01     /* Configuration Register*/
 
-#define BATTERY_MUX                  0x42         /*AN0 High Byte Battery connection with proper gain*/
-#define REGULATOR_MUX                0x52         /*AN1 High Byte Regulator connection with proper gain*/
-#define LOWCONF_BYTE                 0xA3          /* 250 SPS and Comparator Disabled*/
-#define READ_BATTERY                 0             /* Used to select read_adc_voltage battery or regulator*/
-#define READ_REGULATOR               1              /* Used to select read_adc_voltage battery or regulator*/
+#define BATTERY_MUX 0x42   /*AN0 High Byte Battery connection with proper gain*/
+#define REGULATOR_MUX 0x52 /*AN1 High Byte Regulator connection with proper gain*/
+#define LOWCONF_BYTE 0xA3  /* 250 SPS and Comparator Disabled*/
+#define READ_BATTERY 0     /* Used to select read_adc_voltage battery or regulator*/
+#define READ_REGULATOR 1   /* Used to select read_adc_voltage battery or regulator*/
 
-
-
-static int adc_raw[2][10];
-static int voltage[2][10];
-static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
-static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static gpio_config_t io_conf = {};
 static void init_gpios();
 static int last_reg_voltage;
-static adc_oneshot_unit_handle_t adc1_handle;
+static i2c_master_bus_handle_t bus_handle;
+static i2c_master_dev_handle_t dev_handle;
+static float regulator_volts; 
 
-float calc_voltage(uint8_t,  uint8_t);
-
-
-//LED task
-void led_toggle(void *pvParameters) {
-    int current_level = 0;
-    while(1) {
-        if (current_level == 1) {
-            gpio_set_level(GPIO_OUTPUT_IO_18, 0);
-            current_level = 0;
-        } else {
-            gpio_set_level(GPIO_OUTPUT_IO_18, 1);
-            current_level = 1;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-// LDO task
-void control_enable(void *)
-{
-    adc_cali_handle_t adc1_cali_chan1_handle = NULL;
-    bool do_calibration1_chan1 = example_adc_calibration_init(ADC_UNIT_1, LOAD_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan1_handle);
-
-    while (1)
-    {
-        gpio_set_level(GPIO_OUTPUT_IO_18, 0);
-        //LED 
-        gpio_set_level(GPIO_NUM_48, 1);
-
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, LOAD_ADC_CHANNEL, &adc_raw[0][1]));
-        if (do_calibration1_chan1)
-        {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan1_handle, adc_raw[0][1], &voltage[0][1]));
-         
-            last_reg_voltage = voltage[0][1];
-            
-        }
-        gpio_set_level(GPIO_OUTPUT_IO_18, 1);
-        gpio_set_level(GPIO_NUM_48, 0);
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
+float calc_voltage(uint8_t, uint8_t);
+static esp_err_t read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_handle, float *batVolts);
 
 /**
  * @brief Read a sequence of bytes.
  */
 static esp_err_t ads1x15_register_read(i2c_master_dev_handle_t dev_handle, uint8_t *read_buffer, size_t len)
-{   
+{
     return i2c_master_receive(dev_handle, read_buffer, len, I2C_MASTER_TIMEOUT_MS);
 }
 
@@ -136,10 +89,53 @@ static esp_err_t ads1x15_register_write_byte(i2c_master_dev_handle_t dev_handle,
     return (i2c_master_transmit(dev_handle, data, numbytes, I2C_MASTER_TIMEOUT_MS));
 }
 
-/* 
-Read either battery voltage using BATTERY or REGULATOR. whichVoltage = 0 for battery else regulator  
+
+
+// LED task
+void led_toggle(void *pvParameters)
+{
+    int current_level = 0;
+    while (1)
+    {
+        if (current_level == 1)
+        {
+            gpio_set_level(GPIO_OUTPUT_IO_18, 0);
+            current_level = 0;
+        }
+        else
+        {
+            gpio_set_level(GPIO_OUTPUT_IO_18, 1);
+            current_level = 1;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+
+// LDO task
+void control_enable(void *)
+{
+    while (1)
+    {
+        gpio_set_level(GPIO_OUTPUT_IO_18, 0);
+        // LED
+        gpio_set_level(GPIO_NUM_48, 1);
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP_ERROR_CHECK(read_adc_voltage(READ_REGULATOR, dev_handle, &regulator_volts));
+        printf("Regulator Voltage in task %.3f\n", regulator_volts);
+
+        gpio_set_level(GPIO_OUTPUT_IO_18, 1);
+        gpio_set_level(GPIO_NUM_48, 0);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+
+/*
+Read either battery voltage using BATTERY or REGULATOR. whichVoltage = 0 for battery else it will return the regulator voltage.
 */
-static int  read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_handle, float *batVolts)
+static esp_err_t read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_handle, float *batVolts)
 {
     uint8_t data[6];
     uint8_t buffer[6] = {0};
@@ -158,10 +154,10 @@ static int  read_adc_voltage(int whichVoltage, i2c_master_dev_handle_t dev_handl
     buffer[0] = 0;
     ESP_ERROR_CHECK(ads1x15_register_write_byte(dev_handle, buffer, 1));
     ads1x15_register_read(dev_handle, buffer, 2);
-
     *batVolts = calc_voltage(buffer[0], buffer[1]);
     return 0;
 }
+
 
 /*
  * @brief i2c master initialization1
@@ -186,14 +182,13 @@ static void i2c_master_init(i2c_master_bus_handle_t *bus_handle, i2c_master_dev_
     ESP_ERROR_CHECK(i2c_master_bus_add_device(*bus_handle, &dev_config, dev_handle));
 }
 
-/* 
+/*
 Calculate actual voltage with 4.096 gain
 */
 float calc_voltage(uint8_t lowByte, uint8_t highByte)
 {
-    return ((lowByte*256 + highByte) * 0.000125);
+    return ((lowByte * 256 + highByte) * 0.000125);
 }
-
 
 void app_main(void)
 {
@@ -201,13 +196,22 @@ void app_main(void)
     uint32_t sample_number = 0;
     double_t amp_hours = 0;
     double average_current;
+    float batVolts;
 
     init_gpios();
 
-       float batVolts;
+      // Control enable
+    xTaskCreatePinnedToCore(
+        control_enable,   /* Task function. */
+        "control_enable", /* name of task. */
+        2048,             /* Stack size of task */
+        NULL,             /* parameter of the task */
+        5,                /* priority of the task */
+        NULL,             /* Task handle to keep track of created task */
+        1                 /* tskNO_AFFINITY*/
+    );
 
-    i2c_master_bus_handle_t bus_handle;
-    i2c_master_dev_handle_t dev_handle;
+
     i2c_master_init(&bus_handle, &dev_handle);
     ESP_LOGI(TAG, "I2C initialized successfully");
 
@@ -217,16 +221,24 @@ void app_main(void)
     read_adc_voltage(READ_REGULATOR, dev_handle, &batVolts);
     printf("Regulator Voltage %.3f\n", batVolts);
 
-    usleep(1000);
+    usleep(2000);
     while (1)
     {
         read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
         printf("Battery Voltage %.3f\n", batVolts);
 
-        sleep(1.0);
+        sleep(2.0);
 
         read_adc_voltage(READ_REGULATOR, dev_handle, &batVolts);
         printf("Regulator Voltage %.3f\n", batVolts);
+
+        acc_time = acc_time + 0.016666666;
+        sample_number = sample_number + 1;
+        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off.
+
+        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
+                                                                    
+        //  printf("%lu ETime %.3f Hrs BatV %d mV RegV %d mV %.3f aH\n", sample_number, acc_time, voltage[0][0], last_reg_voltage, amp_hours);
     }
 
     usleep(1000);
@@ -234,141 +246,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_master_bus_rm_device(dev_handle));
     ESP_ERROR_CHECK(i2c_del_master_bus(bus_handle));
     ESP_LOGI(TAG, "I2C de-initialized successfully");
-
-
-/*  OLD Code using the ESP32-s3 ADC*/
-    //-------------ADC1 Init---------------//
-    adc_oneshot_unit_init_cfg_t init_config1 = {
-        .unit_id = ADC_UNIT_1,
-        //   .clk_src = ADC_ULP_MODE_RISCV,
-        //   .ulp_mode = ADC_ULP_MODE_DISABLE
-    };
-    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
-
-    //-------------ADC1 Config---------------//
-    adc_oneshot_chan_cfg_t config = {
-        .atten = EXAMPLE_ADC_ATTEN,
-        .bitwidth = ADC_BITWIDTH_DEFAULT,
-    };
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, BATTERY_ADC_CHANNEL, &config));
-    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, LOAD_ADC_CHANNEL, &config));
-
-    //-------------ADC1 Calibration Init---------------//
-    static adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-    bool do_calibration1_chan0 = example_adc_calibration_init(ADC_UNIT_1, BATTERY_ADC_CHANNEL, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
-
-
-    //
-    // Control enable
-    xTaskCreatePinnedToCore(
-        control_enable,   /* Task function. */
-        "control_enable", /* name of task. */
-        2048,             /* Stack size of task */
-        NULL,             /* parameter of the task */
-        5,                /* priority of the task */
-        NULL,             /* Task handle to keep track of created task */
-        1    /* tskNO_AFFINITY*/
-    );
-
-    while (1)
-    {
-        vTaskDelay(pdMS_TO_TICKS(LOOP_DELAY_TIME));
-
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, BATTERY_ADC_CHANNEL, &adc_raw[0][0]));
-        if (do_calibration1_chan0)
-        {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-        }
-
-        acc_time = acc_time + 0.016666666;
-        sample_number = sample_number + 1;
-        average_current = ((last_reg_voltage / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off. 
-
-        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min
-        printf("%lu ETime %.3f Hrs BatV %d mV RegV %d mV %.3f aH\n", sample_number, acc_time, voltage[0][0], last_reg_voltage, amp_hours);
-    }
-
-    // Tear Down
-    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
-    if (do_calibration1_chan0)
-    {
-        example_adc_calibration_deinit(adc1_cali_chan0_handle);
-    }
 }
-
-/*---------------------------------------------------------------
-        ADC Calibration
----------------------------------------------------------------*/
-static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
-{
-    adc_cali_handle_t handle = NULL;
-    esp_err_t ret = ESP_FAIL;
-    bool calibrated = false;
-
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    if (!calibrated)
-    {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Curve Fitting");
-        adc_cali_curve_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .chan = channel,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
-        if (ret == ESP_OK)
-        {
-            calibrated = true;
-        }
-    }
-#endif
-
-#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    if (!calibrated)
-    {
-        ESP_LOGI(TAG, "calibration scheme version is %s", "Line Fitting");
-        adc_cali_line_fitting_config_t cali_config = {
-            .unit_id = unit,
-            .atten = atten,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
-        if (ret == ESP_OK)
-        {
-            calibrated = true;
-        }
-    }
-#endif
-
-    *out_handle = handle;
-    if (ret == ESP_OK)
-    {
-        ESP_LOGI(TAG, "Calibration Success");
-    }
-    else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated)
-    {
-        ESP_LOGW(TAG, "eFuse not burnt, skip software calibration");
-    }
-    else
-    {
-        ESP_LOGE(TAG, "Invalid arg or no memory");
-    }
-    return calibrated;
-}
-
-static void example_adc_calibration_deinit(adc_cali_handle_t handle)
-{
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Curve Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
-
-#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
-    ESP_LOGI(TAG, "deregister %s calibration scheme", "Line Fitting");
-    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
-#endif
-}
-
-
 
 void init_gpios()
 {
@@ -386,9 +264,8 @@ void init_gpios()
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
     // configure GPIO with the given settings
     gpio_config(&io_conf);
-    gpio_set_direction(LED_GPIO,GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
 }
-
 
 #ifdef DEBUG
 void gpio_toggle()
