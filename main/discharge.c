@@ -66,7 +66,7 @@ const static char *TAG = "";
 #define READ_BATTERY 0     /* Used to select read_adc_voltage battery or regulator*/
 #define READ_REGULATOR 1   /* Used to select read_adc_voltage battery or regulator*/
 
-#define MAINLOOP_DELAY  1000
+#define MAINLOOP_DELAY  5000
 // #define MAINLOOP_DELAY  60000
 
 
@@ -74,7 +74,7 @@ static gpio_config_t io_conf = {};
 static void init_gpios();
 static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t dev_handle;
-static float regulator_volts = 3.00;
+static float regulator_volts = 0;
 static float batVolts; 
 
 float calc_voltage(uint8_t, uint8_t);
@@ -127,14 +127,15 @@ void control_enable(void *)
         gpio_set_level(GPIO_OUTPUT_IO_18, 0);
         
         gpio_set_level(GPIO_NUM_48, 1);     //LED
-        read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
+      
         vTaskDelay(pdMS_TO_TICKS(2000));
+        read_adc_voltage(READ_BATTERY, dev_handle, &batVolts);
         gpio_set_level(GPIO_OUTPUT_IO_18, 1);
         gpio_set_level(GPIO_NUM_48, 0);
 
-        vTaskDelay(pdMS_TO_TICKS(1900));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         ESP_ERROR_CHECK(read_adc_voltage(READ_REGULATOR, dev_handle, &regulator_volts));
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -230,7 +231,6 @@ void app_main(void)
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(MAINLOOP_DELAY));
-
         acc_time = acc_time + 0.016666666;
         sample_number = sample_number + 1;
         average_current = ((regulator_volts / 1000.0) / 60.0 * 0.5); // 3v / 60 ohms  50% on time 50% off.
