@@ -77,6 +77,10 @@ Desktop.ini
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
 
-.vscode/settings.json
+settings.json
 .vscode/
-.vscode/c_cpp_properties.json
+c_cpp_properties.json
+
+discharge_with_relax/
+constant_discharge/
+
