@@ -10,6 +10,9 @@
 #include <math.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <time.h>
+#include <sys/time.h>
+#include "esp_efuse.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "soc/soc_caps.h"
@@ -23,8 +26,19 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "driver/i2c_master.h"
+#include "esp_mac.h"
 
 const static char *TAG = "";
+
+// 5 seconds
+//#define MAINLOOP_DELAY  5000
+
+// One minute update
+// #define MAINLOOP_DELAY  60000
+
+// Five minute update
+// Time in minutes
+#define UPDATE_RATE_DURATION    0.1
 
 /* 1M and 2M Battery divider correction*/
 #define BATTERY_DIVIDER_CORRECTION     1.5f
@@ -43,7 +57,7 @@ const static char *TAG = "";
 #define LED_GPIO 48
 
 // #define LOOP_DELAY_TIME 60000
-#define LOOP_DELAY_TIME 1000
+// #define LOOP_DELAY_TIME 1000
 
 /*---------------------------------------------------------------
         ADS1115
@@ -68,15 +82,14 @@ const static char *TAG = "";
 #define READ_BATTERY 0     /* Used to select read_adc_voltage battery or regulator*/
 #define READ_REGULATOR 1   /* Used to select read_adc_voltage battery or regulator*/
 
-
-#define MAINLOOP_DELAY  5000
-// #define MAINLOOP_DELAY  60000
+// Manually set the time of day
+static struct tm tm;
+ 
 
 
 static gpio_config_t io_conf = {};
 static void init_gpios();
-
-/*
+/*  I2C 
 static i2c_master_bus_handle_t bus_handle;
 static i2c_master_dev_handle_t dev_handle;
 static float regulator_volts = 0;
@@ -247,8 +260,40 @@ void app_main(void)
     uint32_t sample_number = 0;
     double_t amp_hours = 0;
     double average_current;
+    time_t t;
+    struct tm timeinfo;
+    char strftime_buf[64];
+    uint8_t mac[6];
+
+    esp_efuse_mac_get_default(mac); 
+    printf("Unique DevKit ID (MAC): %02X:%02X:%02X:%02X:%02X:%02X\n", 
+		       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     init_gpios();
+
+    tm.tm_year = 2026 - 1900;
+    tm.tm_mon = 5 - 1;
+    tm.tm_mday = 25;
+    tm.tm_hour = 8 - 1;
+    tm.tm_min = 32;
+    tm.tm_sec = 0;  
+
+    
+    setenv("TZ", "PST8PDT,M3.2.0/2,M11.1.0", 1);
+    tzset();
+    t = mktime(&tm);
+    struct timeval now = { .tv_sec = t};
+    settimeofday(&now, NULL);
+   
+    t = time(NULL);
+    struct tm *currentTime = localtime(&t);
+    printf("Current Date and Time: %02d/%02d/%04d %02d:%02d:%02d\n",
+    currentTime->tm_mday, currentTime->tm_mon + 1, currentTime->tm_year + 1900,
+    currentTime->tm_hour, currentTime->tm_min, currentTime->tm_sec);
+   
+    localtime_r(&t, &timeinfo);
+    strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+    ESP_LOGI(TAG, "The current date/time in Fremont, CA is: %s", strftime_buf);
 
        //-------------ADC1 Init---------------//
     adc_oneshot_unit_init_cfg_t init_config1 = {
@@ -287,11 +332,11 @@ void app_main(void)
 
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(MAINLOOP_DELAY));
-        acc_time = acc_time + 0.016666666;
+        vTaskDelay(pdMS_TO_TICKS(60000 * UPDATE_RATE_DURATION));
+        acc_time = acc_time + (UPDATE_RATE_DURATION/60.0);
         sample_number = sample_number + 1;
         average_current = ((regulatorVoltage / 1000.0) / 56.0 * 0.5); // 3v / 60 ohms  50% on time 50% off.
-        amp_hours = amp_hours + (average_current * 0.016666666666); // 1 min / 60 min                                                         
+        amp_hours = amp_hours + (average_current * (UPDATE_RATE_DURATION/60.0)); // 5 min / 60 min                                                         
         printf("%lu ETime %.3f Hrs BatV %d mV RegV %d mV %.3f aH\n", sample_number, acc_time, batteryVoltage, regulatorVoltage, amp_hours);
     }
 
