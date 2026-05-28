@@ -30,15 +30,8 @@
 
 const static char *TAG = "";
 
-// 5 seconds
-//#define MAINLOOP_DELAY  5000
-
-// One minute update
-// #define MAINLOOP_DELAY  60000
-
-// Five minute update
 // Time in minutes
-#define UPDATE_RATE_DURATION    0.1
+#define UPDATE_RATE_DURATION 15   
 
 /* 1M and 2M Battery divider correction*/
 #define BATTERY_DIVIDER_CORRECTION     1.5f
